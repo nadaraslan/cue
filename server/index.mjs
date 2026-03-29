@@ -1,13 +1,33 @@
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import OpenAI from "openai";
 
 const port = Number(process.env.PORT || 8787);
-const host = process.env.HOST || "127.0.0.1";
+const host = process.env.HOST || "0.0.0.0";
 const model = process.env.OPENAI_MODEL || "gpt-5-mini";
 const client = process.env.OPENAI_API_KEY
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   : null;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const distDir = path.resolve(__dirname, "../dist");
+const indexHtmlPath = path.join(distDir, "index.html");
+
+const contentTypes = {
+  ".css": "text/css; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".txt": "text/plain; charset=utf-8",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+};
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
@@ -28,13 +48,30 @@ function extractJsonObject(text) {
   return JSON.parse(match[0]);
 }
 
+function sendFile(response, filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+  const contentType = contentTypes[extension] || "application/octet-stream";
+
+  fs.readFile(filePath, (error, contents) => {
+    if (error) {
+      sendJson(response, 404, { error: "Not found." });
+      return;
+    }
+
+    response.writeHead(200, { "Content-Type": contentType });
+    response.end(contents);
+  });
+}
+
 const server = http.createServer((request, response) => {
+  const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
+
   if (request.method === "OPTIONS") {
     sendJson(response, 200, { ok: true });
     return;
   }
 
-  if (request.method === "GET" && request.url === "/api/health") {
+  if (request.method === "GET" && url.pathname === "/api/health") {
     sendJson(response, 200, {
       ok: true,
       model,
@@ -43,7 +80,7 @@ const server = http.createServer((request, response) => {
     return;
   }
 
-  if (request.method === "POST" && request.url === "/api/judge") {
+  if (request.method === "POST" && url.pathname === "/api/judge") {
     if (!client) {
       sendJson(response, 500, {
         error: "OPENAI_API_KEY is missing. Add it to your environment before using AI judge mode.",
@@ -122,7 +159,7 @@ const server = http.createServer((request, response) => {
     return;
   }
 
-  if (request.method === "POST" && request.url === "/api/prepare") {
+  if (request.method === "POST" && url.pathname === "/api/prepare") {
     if (!client) {
       sendJson(response, 500, {
         error: "OPENAI_API_KEY is missing. Add it to your environment before using AI slide preparation.",
@@ -184,6 +221,22 @@ const server = http.createServer((request, response) => {
     });
 
     return;
+  }
+
+  if (request.method === "GET") {
+    const requestedPath = decodeURIComponent(url.pathname);
+    const safePath = path.normalize(requestedPath).replace(/^(\.\.[\/\\])+/, "");
+    const filePath = path.join(distDir, safePath === path.sep ? "index.html" : safePath);
+
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      sendFile(response, filePath);
+      return;
+    }
+
+    if (fs.existsSync(indexHtmlPath)) {
+      sendFile(response, indexHtmlPath);
+      return;
+    }
   }
 
   sendJson(response, 404, { error: "Not found." });
